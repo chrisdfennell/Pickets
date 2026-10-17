@@ -486,6 +486,16 @@ namespace Pickets
                                 MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
+            if (snap.NetworkFolders.Count > 0)
+            {
+                var keep = MessageBox.Show(
+                    "This layout has folder portals that show folders on other computers:\n\n" +
+                    string.Join("\n", snap.NetworkFolders.Distinct(StringComparer.OrdinalIgnoreCase).Take(8)) +
+                    "\n\nOpening them connects to those computers. Only keep them if you know them.\n\nKeep these portals?",
+                    "Import Layout", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning, MessageBoxResult.No);
+                if (keep == MessageBoxResult.Cancel) return;
+                if (keep == MessageBoxResult.No) LayoutSnapshots.RemoveNetworkPortals(snap);
+            }
             RestoreLayoutSnapshot(snap);
             RefreshLayouts();
         }

@@ -732,6 +732,13 @@ namespace Pickets
 
             switch (msg)
             {
+                // Alt+F4 (or Close from the window menu) would destroy the window while the fence
+                // stays in the config, so its items showed nowhere until restart. Do what ✕ does.
+                case 0x0112 /*WM_SYSCOMMAND*/ when (wParam.ToInt64() & 0xFFF0) == 0xF060 /*SC_CLOSE*/:
+                    handled = true;
+                    Dispatcher.BeginInvoke(CloseFence);
+                    return IntPtr.Zero;
+
                 case WM_ENTERSIZEMOVE:
                     _sizeMoveStartPx = DesktopHelper.WindowRectPx(hwnd);
                     _sizeMoveKind = 0;
@@ -2260,10 +2267,15 @@ namespace Pickets
             if (!IsRealIcon) ReloadItems();
         }
 
+        // A plain click (or Esc, or a fresh marquee) replaces the whole selection, not just this
+        // fence's: Delete, Enter and Remove act on every fence's selection, so one left behind in
+        // another fence would go too. Ctrl+click and Ctrl-marquee add to it instead.
         private void SelectOnly(FenceItem? item)
         {
             foreach (var i in ItemsSource)
                 i.IsSelected = ReferenceEquals(i, item);
+            foreach (var other in AllFences)
+                if (other != this) other.ClearSelection();
         }
 
         // In a portal, folders open inside the portal (Ctrl+double-click opens Explorer instead).
@@ -2285,7 +2297,10 @@ namespace Pickets
 
         public bool IsPortal => _model.IsPortal;
         public int SelectedCount => ItemsSource.Count(i => i.IsSelected);
-        public void ClearSelection() => SelectOnly(null);
+        public void ClearSelection()
+        {
+            foreach (var i in ItemsSource) i.IsSelected = false;
+        }
 
         public void OpenSelectedItems()
         {
@@ -2407,6 +2422,7 @@ namespace Pickets
 
         private void Window_KeyDown(object sender, KeyEventArgs e)
         {
+            if (IsMonitor && e.Key is Key.Delete or Key.Enter) return; // no items to act on here
             if (e.Key == Key.Delete) { (RequestDeleteSelected ?? DeleteOwnSelectedWithConfirm)(); e.Handled = true; }
             else if (e.Key == Key.Enter) { (RequestOpenSelected ?? OpenSelectedItems)(); e.Handled = true; }
             else if (e.Key == Key.A && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
@@ -2733,6 +2749,17 @@ namespace Pickets
             menu.IsOpen = true;
         }
 
+        /// <summary>"Notes.lnk", or "Notes (2).lnk" and so on when that name is taken, so a drop
+        /// never overwrites (or takes over) something already on the desktop.</summary>
+        internal static string UniqueDesktopPath(string folder, string fileName)
+        {
+            string name = Path.GetFileNameWithoutExtension(fileName), ext = Path.GetExtension(fileName);
+            var path = Path.Combine(folder, fileName);
+            for (int n = 2; File.Exists(path) || Directory.Exists(path); n++)
+                path = Path.Combine(folder, $"{name} ({n}){ext}");
+            return path;
+        }
+
         private void CompleteOffDesktopDrop(List<string> sources, string userDesktop, bool asShortcut)
         {
             var assigned = new List<string>();
@@ -2743,7 +2770,7 @@ namespace Pickets
                     if (asShortcut)
                     {
                         // Reference the item in place with a .lnk on the real desktop.
-                        var linkPath = Path.Combine(userDesktop, $"{Path.GetFileNameWithoutExtension(src)}.lnk");
+                        var linkPath = UniqueDesktopPath(userDesktop, $"{Path.GetFileNameWithoutExtension(src)}.lnk");
                         ShellLink.CreateShortcut(linkPath, src);
                         assigned.Add(linkPath);
                     }
@@ -2751,8 +2778,8 @@ namespace Pickets
                     {
                         // Physically move the real file onto the desktop.
                         if (Directory.Exists(src)) continue; // don't relocate whole folders
-                        var dest = Path.Combine(userDesktop, Path.GetFileName(src));
-                        if (!File.Exists(dest)) File.Move(src, dest);
+                        var dest = UniqueDesktopPath(userDesktop, Path.GetFileName(src));
+                        File.Move(src, dest);
                         assigned.Add(dest);
                     }
                 }
@@ -2945,6 +2972,7 @@ namespace Pickets
         public void CloseFence()
         {
             _model.Closed = true;
+            ClearSelection(); // a closed fence's selection mustn't ride along with Delete elsewhere
             Hide();
             Changed?.Invoke(this, EventArgs.Empty);
         }
