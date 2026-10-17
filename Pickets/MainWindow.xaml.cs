@@ -66,7 +66,7 @@ namespace Pickets
             if (_config.Options.RunAtStartup || StartupHelper.IsRunAtStartupEnabled())
                 StartupHelper.SetRunAtStartup(true);
 
-            _config.Options.DesktopTakenOver = DesktopTakeover.IsTakenOver(_config.Options.DesktopTakenOver, _fences);
+            TakenOver = DesktopTakeover.IsTakenOver(_config.Options.DesktopTakenOver, _fences);
             if (TakenOver && _config.Options.HideIconsOnStartup)
                 DesktopHelper.SetDesktopIconsVisible(false);
 
@@ -255,16 +255,19 @@ namespace Pickets
             // or an item's right-click → Delete, which both route through the global handlers.
         }
 
+        // Fences on screen: a closed or hidden fence's selection never counts.
+        private IEnumerable<FenceWindow> ShownWindows => _openWindows.Where(w => w.IsVisible);
+
         private void DeleteAllSelected()
         {
-            int total = _openWindows.Sum(w => w.SelectedCount);
+            int total = ShownWindows.Sum(w => w.SelectedCount);
             if (total == 0) return;
 
-            if (!FenceWindow.ConfirmDelete(total, offerRemove: _openWindows.Any(w => w.CanRemoveSelected)))
+            if (!FenceWindow.ConfirmDelete(total, offerRemove: ShownWindows.Any(w => w.CanRemoveSelected)))
                 return;
 
             var failed = new List<string>();
-            foreach (var w in _openWindows.ToList()) failed.AddRange(w.DeleteSelectedItemsNoConfirm());
+            foreach (var w in ShownWindows.ToList()) failed.AddRange(w.DeleteSelectedItemsNoConfirm());
             FenceWindow.ReportDeleteFailures(failed);
         }
 
@@ -272,7 +275,7 @@ namespace Pickets
         // Nothing is deleted. Portals mirror a real folder, so they're left alone.
         private void RemoveSelectedFromFences()
         {
-            var paths = RealFences
+            var paths = RealFences.Where(w => w.IsVisible)
                 .Where(w => !IsCatchAll(w))
                 .SelectMany(w => w.SelectedPaths)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -287,7 +290,7 @@ namespace Pickets
 
         private void OpenAllSelected()
         {
-            foreach (var w in _openWindows.ToList()) w.OpenSelectedItems();
+            foreach (var w in ShownWindows.ToList()) w.OpenSelectedItems();
         }
 
         private void CheckForUpdatesNow_Click(object? sender, RoutedEventArgs? e) => _ = CheckForUpdatesAsync(manual: true);
@@ -798,15 +801,24 @@ namespace Pickets
 
         private bool AnyFenceOwns(string path) => RealFences.Any(w => w.OwnsPath(path));
 
-        private bool TakenOver => _config.Options.DesktopTakenOver == true;
+        private bool TakenOver
+        {
+            get => _config.Options.DesktopTakenOver == true;
+            set
+            {
+                _config.Options.DesktopTakenOver = value;
+                DesktopHelper.RestoreIconsOnExit = value; // only then does quitting show the icons
+            }
+        }
 
         // The first time desktop items are in a fence, take over the desktop: the rest go into
         // the Desktop fence and the real icons are hidden (they come back when Pickets quits).
         private void TakeOverIfNeeded()
         {
             if (TakenOver || !DesktopTakeover.HoldsDesktopItems(_fences)) return;
-            _config.Options.DesktopTakenOver = true;
-            BuildCatchAll(); // saves
+            TakenOver = true;
+            BuildCatchAll();
+            SaveConfig(); // BuildCatchAll only saves when it placed something
             DesktopHelper.SetDesktopIconsVisible(false);
         }
 
@@ -894,7 +906,11 @@ namespace Pickets
                 if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) continue;
                 try
                 {
-                    var w = new FileSystemWatcher(root) { IncludeSubdirectories = false, EnableRaisingEvents = true };
+                    // A bigger buffer than the 8 KB default, so copying or unzipping lots of files at
+                    // once doesn't overflow it; if it does anyway (or the folder goes away), Error
+                    // fires and the whole desktop is checked again.
+                    var w = new FileSystemWatcher(root) { IncludeSubdirectories = false, InternalBufferSize = 64 * 1024, EnableRaisingEvents = true };
+                    w.Error += (_, e) => Dispatcher.BeginInvoke(() => ResyncDesktop(e.GetException()));
                     w.Created += (_, e) => Dispatcher.BeginInvoke(() => OnDesktopFileCreated(e.FullPath));
                     w.Deleted += (_, e) => Dispatcher.BeginInvoke(() => QueueDesktopRemoval(e.FullPath));
                     w.Renamed += (_, e) => Dispatcher.BeginInvoke(() => OnDesktopFileRenamed(e.OldFullPath, e.FullPath));
@@ -902,6 +918,20 @@ namespace Pickets
                 }
                 catch { /* skip this root */ }
             }
+        }
+
+        // The watcher missed events: restart it, drop items whose files are gone, and give new
+        // ones a fence, as a fresh start would.
+        private void ResyncDesktop(Exception? why)
+        {
+            (System.Windows.Application.Current as App)?.SafeLog("Desktop watcher (checking the desktop again)", why);
+            StopDesktopWatcher();
+            StartDesktopWatcher();
+            var gone = RealFences.SelectMany(w => w.OwnedItemPaths)
+                .Where(p => !p.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) && !File.Exists(p) && !Directory.Exists(p))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (var p in gone) OnDesktopFileRemoved(p);
+            if (TakenOver) BuildCatchAll();
         }
 
         private void StopDesktopWatcher()
@@ -917,9 +947,10 @@ namespace Pickets
         {
             try
             {
-                if (path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
-                    path.EndsWith(".ini", StringComparison.OrdinalIgnoreCase)) return;
+                // The original's name back (a save by renaming, below): it stays in its fence.
+                if (_pendingRenames.Remove(path)) return;
                 if (!TakenOver || AnyFenceOwns(path)) return; // the desktop is still left alone
+                if (!DesktopItems.IsShown(path)) return; // hidden, system or temp: Explorer wouldn't show it either
 
                 string target = CatchAllFenceName;
                 if (_config.Options.AutoOrganize)
@@ -933,19 +964,41 @@ namespace Pickets
             catch { /* ignore one bad item */ }
         }
 
-        // A desktop item was removed/renamed away → drop it from whatever fence owned it.
-        // A renamed item stays in the fence it was in (instead of being treated as a new file).
+        // A renamed item stays in the fence it was in (instead of being treated as a new file),
+        // but only once the rename has settled. Word, Excel and others save by renaming the
+        // original to a temp name and the new version into its place: following the first rename
+        // at once moved the document into the Desktop fence on every save.
+        private readonly Dictionary<string, string> _pendingRenames = new(StringComparer.OrdinalIgnoreCase); // old → new
+
         private void OnDesktopFileRenamed(string oldPath, string newPath)
         {
-            foreach (var w in RealFences)
+            if (_pendingRenames.Remove(newPath)) return; // the original's name came back: a save
+            if (RealFences.Any(w => w.OwnsPath(oldPath)))
             {
-                if (w.ReplaceItemPath(oldPath, newPath))
-                {
-                    SaveConfig();
-                    return;
-                }
+                _pendingRenames[oldPath] = newPath;
+                ScheduleDesktopSettle();
+                return;
             }
             OnDesktopFileCreated(newPath); // wasn't in a fence (e.g. a temp file renamed into place)
+        }
+
+        // After the short wait: a rename whose old name is still free is real, so the fence
+        // follows it; one whose file vanished altogether is a removal.
+        private void SettlePendingRenames()
+        {
+            bool changed = false;
+            foreach (var (oldPath, newPath) in _pendingRenames.ToList())
+            {
+                if (File.Exists(oldPath) || Directory.Exists(oldPath)) continue; // saved in place
+                if (File.Exists(newPath) || Directory.Exists(newPath))
+                {
+                    foreach (var w in RealFences)
+                        if (w.ReplaceItemPath(oldPath, newPath)) { changed = true; break; }
+                }
+                else OnDesktopFileRemoved(oldPath);
+            }
+            _pendingRenames.Clear();
+            if (changed) SaveConfig();
         }
 
         // Deletions are confirmed after a short delay. Apps like Office save by deleting the
@@ -957,12 +1010,19 @@ namespace Pickets
         private void QueueDesktopRemoval(string path)
         {
             _pendingRemovals.Add(path);
+            ScheduleDesktopSettle();
+        }
+
+        // Renames and removals are settled together, 2 seconds after the last one.
+        private void ScheduleDesktopSettle()
+        {
             if (_removalTimer == null)
             {
                 _removalTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
                 _removalTimer.Tick += (_, __) =>
                 {
                     _removalTimer.Stop();
+                    SettlePendingRenames();
                     foreach (var p in _pendingRemovals.ToList())
                         if (!File.Exists(p) && !Directory.Exists(p)) OnDesktopFileRemoved(p);
                     _pendingRemovals.Clear();
@@ -1230,7 +1290,7 @@ namespace Pickets
                 _fences.Clear();
                 _peeked = false;
 
-                _config.Options.DesktopTakenOver = false;
+                TakenOver = false;
                 DesktopHelper.SetDesktopIconsVisible(true);
                 SaveConfig();
             });
@@ -1270,8 +1330,8 @@ namespace Pickets
             if (ok != MessageBoxResult.OK) return;
 
             AutoSnapshot($"Before restoring “{snap.Name}”");
-            if (snap.Rules != null) _config.Rules = snap.Rules; // imported from a file
             ReplaceFences(snap.Fences);
+            if (snap.Rules != null) { _config.Rules = snap.Rules; SaveConfig(); } // imported from a file, once the fences are in
         }
 
         /// <summary>Show <paramref name="source"/> (copied) instead of the current fences. Items that

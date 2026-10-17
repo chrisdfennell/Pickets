@@ -113,6 +113,16 @@ namespace Pickets
         /// </summary>
         public static void RestoreDesktopIconsOnExit()
         {
+            if (RestoreIconsOnExit) ShowDesktopIconsNow();
+        }
+
+        /// <summary>Whether quitting brings the desktop icons back: only while Pickets has taken
+        /// over the desktop (MainWindow keeps this in step). Someone who keeps Windows' desktop
+        /// icons off, and whose fences hold no desktop items, keeps them off.</summary>
+        public static bool RestoreIconsOnExit { get; set; }
+
+        private static void ShowDesktopIconsNow()
+        {
             if (Pickets.Services.Sandbox.IsActive) return;
             try
             {
@@ -135,10 +145,11 @@ namespace Pickets
         /// </summary>
         public static bool ForceShowDesktopIcons()
         {
+            if (Pickets.Services.Sandbox.IsActive) return false; // the real desktop isn't the sandbox's
             try
             {
                 InitializeDesktopHandles();
-                RestoreDesktopIconsOnExit(); // the shell's own "Show desktop icons" toggle
+                ShowDesktopIconsNow(); // the shell's own "Show desktop icons" toggle
                 RefreshHandles();
                 if (_listView != IntPtr.Zero && !IsWindowVisible(_listView))
                     ShowWindow(_listView, SW_SHOW);

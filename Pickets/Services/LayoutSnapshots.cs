@@ -28,6 +28,10 @@ namespace Pickets.Services
             public string? ProfileFolder { get; set; }
 
             [JsonIgnore] public string FilePath { get; set; } = "";
+
+            /// <summary>Imported files only: portals in it that show a network folder
+            /// (\\server\share), which the user is asked about before they're kept.</summary>
+            [JsonIgnore] public List<string> NetworkFolders { get; set; } = new();
         }
 
         private static string CurrentDesktop => Sandbox.UserDesktop;
@@ -53,14 +57,91 @@ namespace Pickets.Services
         public static Snapshot Import(string file)
         {
             var snap = JsonSerializer.Deserialize<Snapshot>(File.ReadAllText(file), JsonOpts);
-            if (snap == null || snap.Fences.Count == 0)
+            snap?.Fences?.RemoveAll(f => f == null);
+            if (snap?.Fences == null || snap.Fences.Count == 0)
                 throw new InvalidDataException("This file doesn't contain a Pickets layout.");
             if (string.IsNullOrWhiteSpace(snap.Name)) snap.Name = Path.GetFileNameWithoutExtension(file);
+            FillGaps(snap);
 
             // The desktop first: it may live outside the profile (OneDrive, another drive).
             RemapPaths(snap.Fences, snap.DesktopFolder, CurrentDesktop);
             RemapPaths(snap.Fences, snap.ProfileFolder, CurrentProfile);
+            DropNetworkPaths(snap);
             return snap;
+        }
+
+        /// <summary>A hand-edited or damaged file can leave lists out (null): fill them in, so
+        /// restoring it can't fail halfway, after the rules were already replaced.</summary>
+        internal static void FillGaps(Snapshot snap)
+        {
+            foreach (var f in snap.Fences)
+            {
+                f.Name ??= "";
+                f.ItemPaths = (f.ItemPaths ?? new()).Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
+                f.Tabs = (f.Tabs ?? new()).Where(t => t != null).ToList();
+                foreach (var t in f.Tabs)
+                {
+                    t.Name ??= "Tab";
+                    t.ItemPaths = (t.ItemPaths ?? new()).Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
+                }
+                if (f.PortalMaxAgeDays is int days) f.PortalMaxAgeDays = Math.Clamp(days, 0, (int)MaxDays);
+            }
+            if (snap.Rules != null)
+            {
+                snap.Rules = snap.Rules.Where(r => r != null).ToList();
+                foreach (var r in snap.Rules)
+                {
+                    r.Extensions ??= new();
+                    r.Pattern ??= "";
+                    r.TargetFence ??= "Documents";
+                    // "Older than a million days" would throw when it's worked out as a date.
+                    r.Amount = double.IsFinite(r.Amount) ? Math.Clamp(r.Amount, 0, MaxDays) : 0;
+                }
+            }
+        }
+
+        // About 100 years: more than any rule or filter needs, and well inside what dates allow.
+        private const double MaxDays = 36500;
+
+        /// <summary>
+        /// Someone else's layout could point items or a background at \\some-server\...: just
+        /// checking those exist makes Windows connect to that server, and sign in to it as you.
+        /// Items and backgrounds on the network are dropped (unless they're on this PC's own
+        /// desktop, which may itself be on a server); network portals are listed for the user to
+        /// keep or leave out.
+        /// </summary>
+        internal static void DropNetworkPaths(Snapshot snap)
+        {
+            bool Allowed(string p) => !IsNetworkPath(p) || Sandbox.DesktopRoots.Any(root => IsUnder(p, root));
+            foreach (var f in snap.Fences)
+            {
+                f.ItemPaths = f.ItemPaths.Where(Allowed).ToList();
+                foreach (var t in f.Tabs) t.ItemPaths = t.ItemPaths.Where(Allowed).ToList();
+                if (!string.IsNullOrEmpty(f.BackgroundMedia) && !Allowed(f.BackgroundMedia)) f.BackgroundMedia = null;
+                if (f.IsPortal && !string.IsNullOrEmpty(f.FolderPath) && !Allowed(f.FolderPath))
+                    snap.NetworkFolders.Add(f.FolderPath);
+            }
+        }
+
+        /// <summary>Leaves out the portals that show a network folder (the user said no to them).</summary>
+        public static void RemoveNetworkPortals(Snapshot snap) =>
+            snap.Fences.RemoveAll(f => f.IsPortal && !string.IsNullOrEmpty(f.FolderPath) && snap.NetworkFolders.Contains(f.FolderPath));
+
+        /// <summary>\\server\share\… and \\?\UNC\…, but not a long local path (\\?\C:\…).</summary>
+        internal static bool IsNetworkPath(string path)
+        {
+            var p = path.Replace('/', '\\');
+            if (!p.StartsWith(@"\\")) return false;
+            if (p.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return true;
+            return !(p.Length >= 6 && (p.StartsWith(@"\\?\") || p.StartsWith(@"\\.\")) && char.IsLetter(p[4]) && p[5] == ':');
+        }
+
+        private static bool IsUnder(string path, string folder)
+        {
+            if (string.IsNullOrEmpty(folder)) return false;
+            folder = folder.TrimEnd('\\');
+            return path.StartsWith(folder + "\\", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(path, folder, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>Replace the <paramref name="from"/> folder prefix with <paramref name="to"/> in

@@ -12,7 +12,13 @@ namespace Pickets.Services
     public static class IconHelper
     {
         // --- Public API: get a WPF ImageSource for a file/shortcut/CLSID/shell path ---
-        public static ImageSource? GetImageSourceForPath(string pathOrShell)
+        public static ImageSource? GetImageSourceForPath(string pathOrShell) => ForPath(pathOrShell, 0);
+
+        // A shortcut to a shortcut is followed a few hops at most: two shortcuts pointing at each
+        // other would otherwise recurse until the process dies (a stack overflow can't be caught).
+        private const int MaxShortcutHops = 4;
+
+        private static ImageSource? ForPath(string pathOrShell, int hops)
         {
             try
             {
@@ -28,9 +34,9 @@ namespace Pickets.Services
                         if (src != null) return src;
                     }
 
-                    var target = ShellLinkTryGetTarget(pathOrShell);
+                    var target = hops < MaxShortcutHops ? ShellLinkTryGetTarget(pathOrShell) : null;
                     if (!string.IsNullOrWhiteSpace(target))
-                        return GetImageSourceForPath(target!);
+                        return ForPath(target!, hops + 1);
 
                     // fall back to associated icon for the .lnk file itself
                     return GetFileAssocIcon(pathOrShell, large: true) ??

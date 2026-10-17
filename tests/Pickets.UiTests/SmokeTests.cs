@@ -79,6 +79,52 @@ namespace Pickets.UiTests
         }
 
         [Fact]
+        public void Saving_a_document_the_way_Word_does_keeps_it_in_its_fence()
+        {
+            var (sandbox, desktop, data) = NewSandbox();
+            var report = Path.Combine(desktop, "Report.docx");
+            File.WriteAllText(report, "v1");
+            File.WriteAllText(Path.Combine(data, "config.json"), JsonSerializer.Serialize(new
+            {
+                Fences = new[] { new { Name = "Work", ItemPaths = new[] { report }, Left = 120, Top = 120, Width = 400, Height = 240 } },
+                Options = new { CheckForUpdates = false, DesktopTakenOver = true },
+            }));
+
+            using var app = Start(sandbox);
+            try
+            {
+                var work = WaitForWindow(app.Id, "Work fence");
+                Assert.Equal(new[] { "Report.docx" }, TileNames(work, "Work"));
+
+                // Word's save: the original renamed away, the new version renamed into its place,
+                // then the old copy deleted.
+                var newVersion = Path.Combine(desktop, "~WRD0000.tmp");
+                var oldCopy = Path.Combine(desktop, "~WRL0001.tmp");
+                File.WriteAllText(newVersion, "v2");
+                File.Move(report, oldCopy);
+                File.Move(newVersion, report);
+                File.Delete(oldCopy);
+                Thread.Sleep(3500); // past the 2-second settle
+
+                Assert.Equal(new[] { "Report.docx" }, TileNames(work, "Work"));
+                Assert.Null(FindWindow(app.Id, "Desktop fence")); // nothing else on this desktop to show
+
+                ((WindowPattern)WaitForWindow(app.Id, "Pickets").GetCurrentPattern(WindowPattern.Pattern)).Close();
+                Assert.True(app.WaitForExit(20000));
+                using var saved = JsonDocument.Parse(File.ReadAllText(Path.Combine(data, "config.json")));
+                var fences = saved.RootElement.GetProperty("Fences").EnumerateArray().ToList();
+                var items = fences.Single(f => f.GetProperty("Name").GetString() == "Work").GetProperty("ItemPaths")
+                                  .EnumerateArray().Select(p => p.GetString()).ToList();
+                Assert.Equal(new[] { report }, items);
+            }
+            finally
+            {
+                if (!app.HasExited) app.Kill();
+                Ui.DeleteTempFolders();
+            }
+        }
+
+        [Fact]
         public void A_first_start_leaves_the_desktop_alone_until_the_user_says_so()
         {
             var (sandbox, desktop, data) = NewSandbox();

@@ -156,13 +156,47 @@ namespace Pickets.Services
             if (!Directory.Exists(root)) return Enumerable.Empty<string>();
             try
             {
-                var dirs = Directory.EnumerateDirectories(root);
-                var files = Directory.EnumerateFiles(root)
-                    .Where(p => !p.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) &&
-                                !p.EndsWith(".ini", StringComparison.OrdinalIgnoreCase)); // skip desktop.ini
-                return dirs.Concat(files);
+                var shows = ExplorerShows.Read();
+                var options = new EnumerationOptions { AttributesToSkip = 0, IgnoreInaccessible = true };
+                var all = new DirectoryInfo(root).EnumerateFileSystemInfos("*", options).ToList();
+                return all.Where(i => i is DirectoryInfo).Concat(all.Where(i => i is not DirectoryInfo))
+                          .Where(i => shows.Shows(i.FullName, i.Attributes))
+                          .Select(i => Path.Combine(root, i.Name)) // the root as given, as before (not its long form)
+                          .ToList();
             }
             catch { return Enumerable.Empty<string>(); }
+        }
+
+        /// <summary>Whether Explorer itself would show this desktop item: hidden ones (Word's
+        /// "~$Report.docx" lock files) only with Show hidden items on, protected system files
+        /// (desktop.ini, Thumbs.db) only when those are shown too. Temp files never.</summary>
+        public static bool IsShown(string path)
+        {
+            try { return ExplorerShows.Read().Shows(path, File.GetAttributes(path)); }
+            catch { return false; } // gone already
+        }
+
+        /// <summary>Explorer's View → Show hidden items, and "Hide protected operating system files".</summary>
+        internal readonly record struct ExplorerShows(bool Hidden, bool ProtectedSystem)
+        {
+            public static ExplorerShows Read()
+            {
+                try
+                {
+                    using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced");
+                    return new ExplorerShows(key?.GetValue("Hidden") is int h && h == 1,
+                                             key?.GetValue("ShowSuperHidden") is int s && s == 1);
+                }
+                catch { return default; }
+            }
+
+            public bool Shows(string path, FileAttributes a)
+            {
+                if (path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)) return false;
+                bool hidden = (a & FileAttributes.Hidden) != 0, system = (a & FileAttributes.System) != 0;
+                if (hidden && system) return Hidden && ProtectedSystem;
+                return !hidden || Hidden;
+            }
         }
     }
 }

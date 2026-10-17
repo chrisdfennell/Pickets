@@ -244,6 +244,52 @@ namespace Pickets.UiTests
             });
         }
 
+        [Fact]
+        public void Alt_F4_closes_a_fence_like_its_X_instead_of_destroying_it()
+        {
+            Ui.Run(() =>
+            {
+                FenceWindow.Options = new AppOptions();
+                var model = Fence("Work", 100, 100, 300, 200);
+                var fence = Open(model);
+                Settle();
+
+                // Alt+F4 arrives as the window menu's Close.
+                SendMessage(new WindowInteropHelper(fence).Handle, 0x0112 /*WM_SYSCOMMAND*/, new IntPtr(0xF060) /*SC_CLOSE*/, IntPtr.Zero);
+                Settle();
+
+                Assert.True(model.Closed);             // closed like ✕: kept, and reopenable
+                Assert.False(fence.IsVisible);
+                Assert.Contains(fence, FenceWindow.AllFences); // the window wasn't destroyed
+            });
+        }
+
+        [Fact]
+        public void Selecting_in_one_fence_clears_the_selection_in_the_others_and_closing_clears_it_too()
+        {
+            Ui.Run(() =>
+            {
+                FenceWindow.Options = new AppOptions();
+                var dir = Ui.TempFolder();
+                string Make(string name) { var p = Path.Combine(dir, name); File.WriteAllText(p, "x"); return p; }
+                var a = Open(Fence("A", 100, 100, 300, 200));
+                var b = Open(Fence("B", 500, 100, 300, 200));
+                a.AddItems(new[] { Make("one.txt"), Make("two.txt") });
+                b.AddItems(new[] { Make("three.txt") });
+                Settle();
+
+                var selectOnly = typeof(FenceWindow).GetMethod("SelectOnly", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+                selectOnly.Invoke(a, new object?[] { a.ItemsSource[0] });   // a click in A
+                Assert.Equal(1, a.SelectedCount);
+                selectOnly.Invoke(b, new object?[] { b.ItemsSource[0] });   // then a click in B
+                Assert.Equal(0, a.SelectedCount); // Delete in B now can't take A's item along
+                Assert.Equal(1, b.SelectedCount);
+
+                b.CloseFence();
+                Assert.Equal(0, b.SelectedCount);
+            });
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT { public int Left, Top, Right, Bottom; }
 
