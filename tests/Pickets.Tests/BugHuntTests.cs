@@ -54,16 +54,27 @@ namespace Pickets.Tests
         {
             var a = Path.Combine(_dir, "a.lnk");
             var b = Path.Combine(_dir, "b.lnk");
+            var real = Path.Combine(_dir, "real.txt");
+            File.WriteAllText(real, "x");
             ImageResult? result = null;
+            Exception? failed = null;
             var t = new Thread(() =>
             {
-                ShellLink.CreateShortcut(a, b);
-                ShellLink.CreateShortcut(b, a);
-                result = new ImageResult(IconHelper.GetImageSourceForPath(a) != null);
+                try
+                {
+                    // Some Windows setups won't save a shortcut to something that doesn't exist yet:
+                    // b → a real file, a → b, then b → a, so each target exists when it's saved.
+                    ShellLink.CreateShortcut(b, real);
+                    ShellLink.CreateShortcut(a, b);
+                    ShellLink.CreateShortcut(b, a);
+                    result = new ImageResult(IconHelper.GetImageSourceForPath(a) != null);
+                }
+                catch (Exception ex) { failed = ex; }
             });
             t.SetApartmentState(ApartmentState.STA);
             t.Start();
             Assert.True(t.Join(TimeSpan.FromSeconds(30)), "Getting the icon didn't finish.");
+            Assert.Null(failed);
             Assert.NotNull(result); // before the fix this recursed until the process died
         }
 
