@@ -46,20 +46,11 @@ namespace Pickets.Services
         {
             try
             {
-                if (hwnd == IntPtr.Zero) return;
-                GetWindowThreadProcessId(hwnd, out uint pid);
-                if (pid == (uint)Environment.ProcessId) return; // a fence or one of our dialogs
+                if (hwnd == IntPtr.Zero || IsFence(hwnd)) return; // clicking a fence keeps them up
 
-                if (IsDesktop(hwnd))
-                {
-                    // The desktop becomes the foreground window a moment before Windows lifts it,
-                    // so look a few times over the next second.
-                    _checksLeft = 8;
-                    _check ??= CreateCheckTimer();
-                    _check.Stop();
-                    _check.Start();
-                    CheckLift();
-                }
+                // Any other window, ours too (the Pickets window, a dialog), puts them back
+                // down, or they'd cover it.
+                if (IsDesktop(hwnd)) CheckSoon();
                 else if (Lifted)
                 {
                     Lifted = false;
@@ -72,6 +63,28 @@ namespace Pickets.Services
             }
             catch { /* never let a stray window event take the app down */ }
         }
+
+        /// <summary>
+        /// Lift the fences if the desktop is shown above them. Called when the desktop comes to
+        /// the front, and whenever a fence goes back to the desktop layer (shown again with
+        /// Ctrl+Alt+H, a new fence, a fence clicked), since that can happen while the desktop is
+        /// shown. The desktop becomes the foreground window a moment before Windows lifts it, so
+        /// this looks a few times over the next second.
+        /// </summary>
+        public static void CheckSoon()
+        {
+            if (_hook == IntPtr.Zero || Lifted) return;
+            var fg = GetForegroundWindow();
+            if (!IsDesktop(fg) && !IsFence(fg)) return; // an app is in front: not "Show desktop"
+            _checksLeft = 8;
+            _check ??= CreateCheckTimer();
+            _check.Stop();
+            _check.Start();
+            CheckLift();
+        }
+
+        private static bool IsFence(IntPtr hwnd) =>
+            FenceWindow.AllFences.Any(f => new WindowInteropHelper(f).Handle == hwnd);
 
         private static System.Windows.Threading.DispatcherTimer? _check;
         private static int _checksLeft;
@@ -89,7 +102,8 @@ namespace Pickets.Services
 
         private static void CheckLift()
         {
-            if (Lifted || !IsDesktop(GetForegroundWindow())) { _check?.Stop(); return; }
+            var fg = GetForegroundWindow();
+            if (Lifted || !(IsDesktop(fg) || IsFence(fg))) { _check?.Stop(); return; }
             var fences = FenceWindow.AllFences.Where(f => f.IsVisible)
                                               .Select(f => new WindowInteropHelper(f).Handle)
                                               .Where(h => h != IntPtr.Zero).ToList();
