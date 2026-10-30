@@ -677,7 +677,12 @@ namespace Pickets
             if (Pickets.Services.FencesInFront.IsActive) DesktopHelper.SetTopmost(hwnd, true);
             // While "Show desktop" is on, the desktop window is on top: stay above it.
             else if (Pickets.Services.ShowDesktopWatcher.Lifted) Pickets.Services.ShowDesktopWatcher.BringToTop(hwnd);
-            else DesktopHelper.SendToDesktopLayer(hwnd);
+            else
+            {
+                DesktopHelper.SendToDesktopLayer(hwnd);
+                // Shown (or clicked) while the desktop is shown on top: lift the fences after all.
+                Pickets.Services.ShowDesktopWatcher.CheckSoon();
+            }
         }
 
         /// <summary>Stack this fence above every other fence (still below normal app windows),
