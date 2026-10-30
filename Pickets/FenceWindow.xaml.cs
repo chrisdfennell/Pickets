@@ -169,6 +169,9 @@ namespace Pickets
             SourceInitialized += (_, __) => _suppressGeometrySave = false;
 
             Loaded += (_, __) => { EnsureBottomZOrder(); QueueAutoFit(); };
+            // A fence is never minimized: it has no taskbar button to bring it back, and
+            // Ctrl+Alt+H's Show() leaves a minimized window minimized (so: invisible).
+            StateChanged += (_, __) => { if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; };
             // Clicking a fence: back below app windows, but in front of the other fences. Keyboard
             // focus goes to a tile, so a screen reader has something to read.
             Activated += (_, __) =>
@@ -672,6 +675,8 @@ namespace Pickets
             var hwnd = new WindowInteropHelper(this).Handle;
             // While fences are in front of app windows, clicking or opening one keeps it there.
             if (Pickets.Services.FencesInFront.IsActive) DesktopHelper.SetTopmost(hwnd, true);
+            // While "Show desktop" is on, the desktop window is on top: stay above it.
+            else if (Pickets.Services.ShowDesktopWatcher.Lifted) Pickets.Services.ShowDesktopWatcher.BringToTop(hwnd);
             else DesktopHelper.SendToDesktopLayer(hwnd);
         }
 
