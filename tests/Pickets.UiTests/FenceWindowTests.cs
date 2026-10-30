@@ -290,8 +290,30 @@ namespace Pickets.UiTests
             });
         }
 
+        [Fact]
+        public void A_minimized_fence_comes_straight_back()
+        {
+            Ui.Run(() =>
+            {
+                FenceWindow.Options = new AppOptions();
+                var fence = Open(Fence("Work", 100, 100, 300, 200));
+                Settle();
+
+                // Fences have no taskbar button, and Ctrl+Alt+H's Show() keeps a minimized window
+                // minimized, so one that got minimized (Win+M, another app) was gone for good.
+                ShowWindow(new WindowInteropHelper(fence).Handle, 6 /*SW_MINIMIZE*/);
+                Settle();
+
+                Assert.Equal(WindowState.Normal, fence.WindowState);
+                Assert.True(fence.IsVisible);
+            });
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT { public int Left, Top, Right, Bottom; }
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int cmd);
 
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);

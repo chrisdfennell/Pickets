@@ -128,6 +128,9 @@ namespace Pickets
             // System-wide shortcuts (Ctrl+Alt+H hide/show fences, …)
             ApplyHotkeySetting();
 
+            // Fences stay visible on "Show desktop" (Win+D)
+            ShowDesktopWatcher.Start();
+
             // Main window: Home (fence list), Settings, About.
             InitHub();
 
@@ -1450,7 +1453,12 @@ namespace Pickets
             foreach (var w in _openWindows)
             {
                 if (hidden) w.Hide();
-                else if (!w.IsClosedByUser) { w.Show(); w.EnsureBottomZOrder(); }
+                else if (!w.IsClosedByUser)
+                {
+                    if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;
+                    w.Show();
+                    w.EnsureBottomZOrder();
+                }
             }
         }
 
@@ -1470,6 +1478,7 @@ namespace Pickets
             _hotkeys?.Dispose();
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             StopDesktopWatcher();
+            ShowDesktopWatcher.Stop();
             DesktopDoubleClickMonitor.Stop();
             DesktopRightDragFenceSelector.Stop();
             DesktopLeftDragLasso.Stop();
